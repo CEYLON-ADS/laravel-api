@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ApplicationUser;
 use App\Models\GeneralAdvertisement;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class AdvertisementController extends Controller
 {
@@ -205,5 +207,163 @@ class AdvertisementController extends Controller
             'id' => $advertisement->id,
             'likesCount' => $advertisement->likes_count,
         ], 'Advertisement liked');
+    }
+
+    public function mine(Request $request): JsonResponse
+    {
+        /** @var ApplicationUser|null $user */
+        $user = $request->attributes->get('apiUser');
+        if (!$user) {
+            return $this->fail('Unauthorized', 401);
+        }
+
+        $ads = GeneralAdvertisement::query()
+            ->with([
+                'category:id,name,slug',
+                'city:id,name',
+                'cities:id,name',
+                'advertiseType:id,type,price',
+            ])
+            ->where('application_user_id', $user->id)
+            ->orderByDesc('is_pinned')
+            ->latest()
+            ->paginate((int) $request->integer('size', 12));
+
+        return $this->success($ads);
+    }
+
+    public function update(Request $request, GeneralAdvertisement $advertisement): JsonResponse
+    {
+        /** @var ApplicationUser|null $user */
+        $user = $request->attributes->get('apiUser');
+        if (!$user) {
+            return $this->fail('Unauthorized', 401);
+        }
+
+        if ($advertisement->application_user_id !== $user->id) {
+            return $this->fail('Forbidden: you cannot modify this ad.', 403);
+        }
+
+        $validated = $request->validate([
+            'title' => ['sometimes', 'required', 'string', 'max:160'],
+            'description' => ['sometimes', 'required', 'string', 'max:3000'],
+            'imageUrl' => ['nullable', 'url', 'max:2048'],
+            'imageUrls' => ['nullable', 'array', 'max:5'],
+            'imageUrls.*' => ['url', 'max:2048'],
+            'listingPrice' => ['nullable', 'numeric', 'min:0'],
+            'contactPhone' => ['sometimes', 'required', 'string', 'max:20'],
+            'contactWhatsapp' => ['nullable', 'boolean'],
+            'contactWhatsappNumber' => ['nullable', 'string', 'max:40', 'required_if:contactWhatsapp,true'],
+            'telegram' => ['nullable', 'boolean'],
+            'telegramNumber' => ['nullable', 'string', 'max:40', 'required_if:telegram,true'],
+            'imo' => ['nullable', 'boolean'],
+            'imoNumber' => ['nullable', 'string', 'max:40', 'required_if:imo,true'],
+            'viber' => ['nullable', 'boolean'],
+            'viberNumber' => ['nullable', 'string', 'max:40', 'required_if:viber,true'],
+            'cashback' => ['nullable', 'boolean'],
+            'categoryId' => ['sometimes', 'required', 'uuid', 'exists:categories,id'],
+            'cityId' => ['nullable', 'uuid', 'exists:cities,id'],
+            'cityIds' => ['nullable', 'array'],
+            'cityIds.*' => ['uuid', 'exists:cities,id'],
+            'advertiseTypeId' => ['nullable', 'uuid', 'exists:advertise_types,id'],
+        ]);
+
+        $update = [];
+
+        if (array_key_exists('title', $validated)) {
+            $update['title'] = $validated['title'];
+        }
+        if (array_key_exists('description', $validated)) {
+            $update['description'] = $validated['description'];
+        }
+        if (array_key_exists('listingPrice', $validated)) {
+            $update['listing_price'] = $validated['listingPrice'];
+        }
+        if (array_key_exists('contactPhone', $validated)) {
+            $update['contact_phone'] = $validated['contactPhone'];
+        }
+        if (array_key_exists('contactWhatsapp', $validated)) {
+            $update['contact_whatsapp'] = (bool) $validated['contactWhatsapp'];
+        }
+        if (array_key_exists('contactWhatsappNumber', $validated)) {
+            $update['contact_whatsapp_number'] = $validated['contactWhatsappNumber'];
+        }
+        if (array_key_exists('telegram', $validated)) {
+            $update['telegram'] = (bool) $validated['telegram'];
+        }
+        if (array_key_exists('telegramNumber', $validated)) {
+            $update['telegram_number'] = $validated['telegramNumber'];
+        }
+        if (array_key_exists('imo', $validated)) {
+            $update['imo'] = (bool) $validated['imo'];
+        }
+        if (array_key_exists('imoNumber', $validated)) {
+            $update['imo_number'] = $validated['imoNumber'];
+        }
+        if (array_key_exists('viber', $validated)) {
+            $update['viber'] = (bool) $validated['viber'];
+        }
+        if (array_key_exists('viberNumber', $validated)) {
+            $update['viber_number'] = $validated['viberNumber'];
+        }
+        if (array_key_exists('cashback', $validated)) {
+            $update['cashback'] = (bool) $validated['cashback'];
+        }
+        if (array_key_exists('categoryId', $validated)) {
+            $update['category_id'] = $validated['categoryId'];
+        }
+        if (array_key_exists('cityId', $validated)) {
+            $update['city_id'] = $validated['cityId'];
+        }
+        if (array_key_exists('advertiseTypeId', $validated)) {
+            $update['advertise_type_id'] = $validated['advertiseTypeId'];
+        }
+
+        if (array_key_exists('imageUrls', $validated) || array_key_exists('imageUrl', $validated)) {
+            $imageUrls = array_values(array_filter((array) ($validated['imageUrls'] ?? [])));
+            if (empty($imageUrls) && !empty($validated['imageUrl'])) {
+                $imageUrls = [$validated['imageUrl']];
+            }
+            $update['image_url'] = $imageUrls[0] ?? ($validated['imageUrl'] ?? null);
+            $update['image_urls'] = !empty($imageUrls) ? $imageUrls : null;
+        }
+
+        $advertisement->update($update);
+
+        if (array_key_exists('cityIds', $validated) || array_key_exists('cityId', $validated)) {
+            if (!empty($validated['cityIds'])) {
+                $advertisement->cities()->sync($validated['cityIds']);
+            } elseif (!empty($validated['cityId'])) {
+                $advertisement->cities()->sync([$validated['cityId']]);
+            }
+        }
+
+        $advertisement->load([
+            'category:id,name,slug',
+            'city:id,name',
+            'cities:id,name',
+            'advertiseType:id,type,price',
+            'user:id,mobile_number',
+        ]);
+
+        return $this->success($advertisement, 'Advertisement updated');
+    }
+
+    public function destroy(Request $request, GeneralAdvertisement $advertisement): JsonResponse
+    {
+        /** @var ApplicationUser|null $user */
+        $user = $request->attributes->get('apiUser');
+        if (!$user) {
+            return $this->fail('Unauthorized', 401);
+        }
+
+        if ($advertisement->application_user_id !== $user->id) {
+            return $this->fail('Forbidden: you cannot delete this ad.', 403);
+        }
+
+        $advertisement->cities()->detach();
+        $advertisement->delete();
+
+        return $this->success(null, 'Advertisement deleted');
     }
 }

@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
@@ -143,6 +144,76 @@ class AuthController extends Controller
         }
 
         return $this->success($this->formatUser($user));
+    }
+
+    public function logout(Request $request): JsonResponse
+    {
+        $user = $request->attributes->get('apiUser');
+
+        if ($user instanceof ApplicationUser) {
+            $user->update(['last_login_at' => now()]);
+        }
+
+        return $this->success(null, 'Logged out successfully');
+    }
+
+    public function updateProfile(Request $request): JsonResponse
+    {
+        /** @var ApplicationUser|null $user */
+        $user = $request->attributes->get('apiUser');
+
+        if (!$user) {
+            return $this->fail('Unauthorized', 401);
+        }
+
+        $validated = $request->validate([
+            'name' => ['nullable', 'string', 'max:120'],
+            'mobileNumber' => ['nullable', 'string', 'min:9', 'max:20', 'unique:application_users,mobile_number,'.$user->id],
+        ]);
+
+        if (empty($validated)) {
+            return $this->fail('No profile fields provided.', 422);
+        }
+
+        $update = [];
+        if (array_key_exists('name', $validated)) {
+            $update['name'] = $validated['name'];
+        }
+        if (array_key_exists('mobileNumber', $validated)) {
+            $update['mobile_number'] = $validated['mobileNumber'];
+        }
+
+        $user->update($update);
+        $user->refresh();
+
+        return $this->success($this->formatUser($user), 'Profile updated');
+    }
+
+    public function changePassword(Request $request): JsonResponse
+    {
+        /** @var ApplicationUser|null $user */
+        $user = $request->attributes->get('apiUser');
+
+        if (!$user) {
+            return $this->fail('Unauthorized', 401);
+        }
+
+        $validated = $request->validate([
+            'currentPassword' => ['required', 'string'],
+            'newPassword' => ['required', 'string', 'min:6', 'different:currentPassword'],
+        ]);
+
+        if ($user->password && !Hash::check($validated['currentPassword'], $user->password)) {
+            throw ValidationException::withMessages([
+                'currentPassword' => ['Current password is incorrect.'],
+            ]);
+        }
+
+        $user->update([
+            'password' => Hash::make($validated['newPassword']),
+        ]);
+
+        return $this->success(null, 'Password updated successfully');
     }
 
     private function formatUser(ApplicationUser $user): array
